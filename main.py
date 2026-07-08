@@ -1,25 +1,25 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from uuid import uuid4
+
 from collections import defaultdict
+from uuid import uuid4
 import time
 
 app = FastAPI()
 
 EMAIL = "23f2005192@ds.study.iitm.ac.in"
 
-# Add BOTH your assigned origin and the exam page origin.
-# Replace the second URL with the actual origin of the exam page.
+# Add the exam origin if it is different.
 ALLOWED_ORIGINS = [
     "https://app-sc6wzi.example.com",
-    # "https://<exam-page-origin>",
+    # "https://<exam-origin>"
 ]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "OPTIONS"],
     allow_headers=["*"],
     expose_headers=["X-Request-ID"],
@@ -33,6 +33,11 @@ client_requests = defaultdict(list)
 
 @app.middleware("http")
 async def request_context(request: Request, call_next):
+    """
+    Middleware 1
+    Generates or propagates X-Request-ID.
+    """
+
     request_id = request.headers.get("X-Request-ID")
 
     if not request_id:
@@ -49,18 +54,33 @@ async def request_context(request: Request, call_next):
 
 @app.middleware("http")
 async def rate_limiter(request: Request, call_next):
-    client_id = request.headers.get("X-Client-Id", "default")
+    """
+    Middleware 2
+    Per-client rate limiting.
+    """
+
+    # Don't rate-limit CORS preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    client_id = request.headers.get("X-Client-Id", "anonymous")
+
     now = time.time()
 
-    # Remove timestamps older than the window
-    client_requests[client_id] = [
-        t for t in client_requests[client_id]
+    timestamps = [
+        t
+        for t in client_requests[client_id]
         if now - t < WINDOW
     ]
 
-    # Enforce limit
-    if len(client_requests[client_id]) >= LIMIT:
-        request_id = request.headers.get("X-Request-ID") or str(uuid4())
+    client_requests[client_id] = timestamps
+
+    if len(timestamps) >= LIMIT:
+
+        request_id = request.headers.get("X-Request-ID")
+
+        if not request_id:
+            request_id = str(uuid4())
 
         response = JSONResponse(
             status_code=429,
@@ -70,6 +90,7 @@ async def rate_limiter(request: Request, call_next):
         )
 
         response.headers["X-Request-ID"] = request_id
+
         return response
 
     client_requests[client_id].append(now)
@@ -79,6 +100,7 @@ async def rate_limiter(request: Request, call_next):
 
 @app.get("/ping")
 async def ping(request: Request):
+
     return {
         "email": EMAIL,
         "request_id": request.state.request_id
